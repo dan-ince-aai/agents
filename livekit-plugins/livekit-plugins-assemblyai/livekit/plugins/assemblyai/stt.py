@@ -44,13 +44,13 @@ from .log import logger
 
 ENGLISH = "en"
 DEFAULT_ENCODING = "pcm_s16le"
+DEFAULT_SILENCE_THRESHOLD = 500
 
 # Define bytes per frame for different encoding types
 bytes_per_frame = {
     "pcm_s16le": 2,
     "pcm_mulaw": 1,
 }
-
 
 @dataclass
 class STTOptions:
@@ -189,6 +189,8 @@ class SpeechStream(stt.SpeechStream):
         self._api_key = api_key
         self._session = http_session
         self._speech_duration: float = 0
+        self._prior_partial = ''
+        self._prior_alts = []
 
         # keep a list of final transcripts to combine them inside the END_OF_SPEECH event
         self._final_events: list[SpeechEvent] = []
@@ -227,14 +229,14 @@ class SpeechStream(stt.SpeechStream):
         async def send_task(ws: aiohttp.ClientWebSocketResponse):
             nonlocal closing_ws
 
-            if is_given(self._opts.end_utterance_silence_threshold):
-                await ws.send_str(
-                    json.dumps(
-                        {
-                            "end_utterance_silence_threshold": self._opts.end_utterance_silence_threshold  # noqa: E501
-                        }
-                    )
-                )
+            #if is_given(self._opts.end_utterance_silence_threshold):
+            #    await ws.send_str(
+            #        json.dumps(
+            #            {
+            #                "endpoint_silence_threshold_ms": self._opts.end_utterance_silence_threshold  # noqa: E501
+            #            }
+            #        )
+            #    )
 
             samples_per_buffer = self._opts.sample_rate // round(1 / self._opts.buffer_size_seconds)
             audio_bstream = utils.audio.AudioByteStream(
@@ -329,8 +331,11 @@ class SpeechStream(stt.SpeechStream):
             if is_given(self._opts.word_boost)
             else None,
             "encoding": self._opts.encoding if is_given(self._opts.encoding) else DEFAULT_ENCODING,
+            "endpoint_silence_threshold_ms": self._opts.end_utterance_silence_threshold if is_given(self._opts.end_utterance_silence_threshold) else DEFAULT_SILENCE_THRESHOLD,
             "disable_partial_transcripts": self._opts.disable_partial_transcripts,
             "enable_extra_session_information": self._opts.enable_extra_session_information,
+            #"formatted_finals": False,
+            #"unformatted_finals": True
         }
 
         headers = {
@@ -338,7 +343,7 @@ class SpeechStream(stt.SpeechStream):
             "Content-Type": "application/json",
         }
 
-        ws_url = "wss://api.assemblyai.com/v2/realtime/ws"
+        ws_url = "wss://streaming.assemblyai.com/v3/ws"
         filtered_config = {k: v for k, v in live_config.items() if v is not None}
         url = f"{ws_url}?{urlencode(filtered_config).lower()}"
         ws = await self._session.ws_connect(url, headers=headers)
@@ -352,49 +357,87 @@ class SpeechStream(stt.SpeechStream):
             logger.error("Received error from AssemblyAI: %s", data["error"])
             return
 
-        message_type = data.get("message_type")
+        message_type = data.get("type")
 
-        if message_type == "SessionBegins":
+        if message_type == "Begin":
+            logger.debug("AssemblyAI session started: %s", str(data))
             start_event = stt.SpeechEvent(type=stt.SpeechEventType.START_OF_SPEECH)
             self._event_ch.send_nowait(start_event)
 
-        elif message_type == "PartialTranscript":
+        elif message_type == "Partial":
+            #logger.debug("AssemblyAI partial received: %s", str(data))
             alts = live_transcription_to_speech_data(ENGLISH, data)
+            
             if len(alts) > 0 and alts[0].text:
-                interim_event = stt.SpeechEvent(
-                    type=stt.SpeechEventType.INTERIM_TRANSCRIPT,
-                    alternatives=alts,
-                )
-                self._event_ch.send_nowait(interim_event)
+                #interim_event = stt.SpeechEvent(
+                #    type=stt.SpeechEventType.INTERIM_TRANSCRIPT,
+                #    alternatives=alts,
+                #)
+                #self._event_ch.send_nowait(interim_event)
 
-        elif message_type == "FinalTranscript":
+                # if we receive a partial that has new words, final it
+                if alts[0].text != self._prior_partial:
+
+                    full_response = alts[0].text
+                    common_tokens = 0
+                    for i in range(min(len(self._prior_partial), len(full_response))):
+                        if self._prior_partial[i] == full_response[i]:
+                            common_tokens += 1
+                    alts[0].text = full_response[common_tokens:]
+                    #full_response - self._prior_partial
+                    
+                    final_event = stt.SpeechEvent(
+                        type=stt.SpeechEventType.FINAL_TRANSCRIPT,
+                        alternatives=alts,
+                    )
+                    self._final_events.append(final_event)
+                    self._event_ch.send_nowait(final_event)
+                    self._prior_partial = full_response
+
+                    # log metrics
+                    if self._speech_duration > 0:
+                        usage_event = stt.SpeechEvent(
+                            type=stt.SpeechEventType.RECOGNITION_USAGE,
+                            alternatives=[],
+                            recognition_usage=stt.RecognitionUsage(audio_duration=self._speech_duration),
+                        )
+                        self._event_ch.send_nowait(usage_event)
+                        self._speech_duration = 0
+            
+            # if we receive an empty partial and have accumulated words, we have the end of an utterance and thus a final
+            if len(alts) > 0 and len(alts[0].text) == 0 and len(self._prior_partial) > 0:
+                self._prior_partial = ''
+                
+
+        elif message_type == "Final":
+            logger.debug("AssemblyAI final received: %s", str(data))
             alts = live_transcription_to_speech_data(ENGLISH, data)
-            if len(alts) > 0 and alts[0].text:
-                final_event = stt.SpeechEvent(
-                    type=stt.SpeechEventType.FINAL_TRANSCRIPT,
-                    alternatives=alts,
-                )
-                self._final_events.append(final_event)
-                self._event_ch.send_nowait(final_event)
+            #if len(alts) > 0 and alts[0].text:
+            #    final_event = stt.SpeechEvent(
+            #        type=stt.SpeechEventType.FINAL_TRANSCRIPT,
+            #        alternatives=alts,
+            #    )
+            #    self._final_events.append(final_event)
+            #    self._event_ch.send_nowait(final_event)
 
             # log metrics
-            if self._speech_duration > 0:
-                usage_event = stt.SpeechEvent(
-                    type=stt.SpeechEventType.RECOGNITION_USAGE,
-                    alternatives=[],
-                    recognition_usage=stt.RecognitionUsage(audio_duration=self._speech_duration),
-                )
-                self._event_ch.send_nowait(usage_event)
-                self._speech_duration = 0
+            #if self._speech_duration > 0:
+            #    usage_event = stt.SpeechEvent(
+            #        type=stt.SpeechEventType.RECOGNITION_USAGE,
+            #        alternatives=[],
+            #        recognition_usage=stt.RecognitionUsage(audio_duration=self._speech_duration),
+            #    )
+            #    self._event_ch.send_nowait(usage_event)
+            #    self._speech_duration = 0
 
-        elif message_type == "SessionTerminated":
+        elif message_type == "Termination":
             if closing_ws:
                 pass
             else:
                 raise Exception("AssemblyAI connection closed unexpectedly")
 
-        elif message_type == "SessionInformation":
-            logger.debug("AssemblyAI Session Information: %s", str(data))
+        #elif message_type == "SessionInformation":
+        #    logger.debug("AssemblyAI Session Information: %s", str(data))
 
         else:
             logger.warning(
