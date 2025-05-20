@@ -399,7 +399,13 @@ class AudioRecognition:
         if isinstance(node, AsyncIterable):
             async for ev in node:
                 assert isinstance(ev, stt.SpeechEvent), "STT node must yield SpeechEvent"
-                await self._on_stt_event(ev)
+                logger.debug(f"[STT_TASK] Processing STT event: type={ev.type}, request_id='{ev.request_id}'")
+                try:
+                    await self._on_stt_event(ev)
+                    logger.debug(f"[STT_TASK] Successfully processed STT event: type={ev.type}")
+                except Exception as e:
+                    logger.error(f"[STT_TASK] Error processing STT event: {e}", exc_info=True)
+                    raise
 
     @utils.log_exceptions(logger=logger)
     async def _vad_task(
