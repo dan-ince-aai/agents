@@ -243,6 +243,15 @@ class AudioRecognition:
         elif ev.type == stt.SpeechEventType.INTERIM_TRANSCRIPT:
             self._hooks.on_interim_transcript(ev)
             self._audio_interim_transcript = ev.alternatives[0].text
+            
+        elif ev.type == stt.SpeechEventType.END_OF_SPEECH:
+            self._hooks.on_end_of_speech(vad.VADEvent(type=vad.VADEventType.END_OF_SPEECH))
+            self._speaking = False
+            self._last_speaking_time = time.time()
+            
+            if not self._manual_turn_detection:
+                chat_ctx = self._hooks.retrieve_chat_ctx().copy()
+                self._run_eou_detection(chat_ctx)
 
     async def _on_vad_event(self, ev: vad.VADEvent) -> None:
         if ev.type == vad.VADEventType.START_OF_SPEECH:
