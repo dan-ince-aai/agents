@@ -245,6 +245,7 @@ class AudioRecognition:
             self._audio_interim_transcript = ev.alternatives[0].text
             
         elif ev.type == stt.SpeechEventType.END_OF_SPEECH:
+            logger.debug("End of speech received STT event")
             current_time = time.time()
             self._hooks.on_end_of_speech(vad.VADEvent(
                 type=vad.VADEventType.END_OF_SPEECH,

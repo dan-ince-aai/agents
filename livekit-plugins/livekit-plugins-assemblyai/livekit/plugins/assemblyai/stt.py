@@ -385,6 +385,7 @@ class SpeechStream(stt.SpeechStream):
                 self._final_events.append(final_event)
                 self._event_ch.send_nowait(final_event)
                 self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH))
+                logger.debug("AssemblyAI end of speech")
 
             else:
                 if data['turn_order'] not in self._utterance_mapping:
