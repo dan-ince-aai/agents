@@ -190,19 +190,28 @@ class AudioRecognition:
         self._commit_user_turn_atask = asyncio.create_task(_commit_user_turn())
 
     async def _on_stt_event(self, ev: stt.SpeechEvent) -> None:
+        # Log all incoming STT events at the very beginning
+        logger.debug(f"[STT_EVENT] Received event: type={ev.type}, request_id='{ev.request_id}', alternatives_count={len(ev.alternatives)}")
+        if ev.alternatives:
+            logger.debug(f"[STT_EVENT] First alternative text: '{ev.alternatives[0].text}'")
         logger.debug(f"STT event received: type={ev.type}, speaking={self._speaking}, manual_turn_detection={self._manual_turn_detection}, user_turn_committed={self._user_turn_committed}")
         
-        if (
-            self._manual_turn_detection
-            and self._user_turn_committed
-            and (
-                self._end_of_turn_task is None
-                or self._end_of_turn_task.done()
-                or ev.type == stt.SpeechEventType.INTERIM_TRANSCRIPT
-            )
-        ):
-            logger.debug("Ignoring STT event due to manual turn detection and committed turn")
-            return
+        if self._manual_turn_detection and self._user_turn_committed:
+            logger.debug(f"[TURN_DETECTION] Manual turn detection is enabled and user turn is committed")
+            logger.debug(f"[TURN_DETECTION] Event type: {ev.type}, EOU task: {self._end_of_turn_task}")
+            
+            if self._end_of_turn_task is None:
+                logger.debug("[TURN_DETECTION] Ignoring because EOU task is None")
+            elif self._end_of_turn_task.done():
+                logger.debug(f"[TURN_DETECTION] Ignoring because EOU task is done: {self._end_of_turn_task.done()}")
+            elif ev.type == stt.SpeechEventType.INTERIM_TRANSCRIPT:
+                logger.debug("[TURN_DETECTION] Ignoring because event is INTERIM_TRANSCRIPT")
+            
+            if (self._end_of_turn_task is None or 
+                self._end_of_turn_task.done() or 
+                ev.type == stt.SpeechEventType.INTERIM_TRANSCRIPT):
+                logger.debug(f"[TURN_DETECTION] Ignoring STT event type: {ev.type}")
+                return
 
         if ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT:
             logger.debug("Processing FINAL_TRANSCRIPT event")
@@ -275,8 +284,10 @@ class AudioRecognition:
                 logger.error(f"Error in on_end_of_speech hook: {e}")
                 raise
                 
+            logger.debug(f"[SPEAKING] Setting _speaking to False (from END_OF_SPEECH), was speaking for {current_time - self._last_speaking_time:.3f}s")
             self._speaking = False
             self._last_speaking_time = current_time
+            logger.debug(f"[SPEAKING] _speaking is now {self._speaking}")
             
             if not self._manual_turn_detection:
                 logger.debug("Running EOU detection after END_OF_SPEECH")
@@ -292,6 +303,7 @@ class AudioRecognition:
     async def _on_vad_event(self, ev: vad.VADEvent) -> None:
         if ev.type == vad.VADEventType.START_OF_SPEECH:
             self._hooks.on_start_of_speech(ev)
+            logger.debug("[SPEAKING] Setting _speaking to True (from VAD START_OF_SPEECH)")
             self._speaking = True
 
             if self._end_of_turn_task is not None:
