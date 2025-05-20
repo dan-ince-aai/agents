@@ -35,10 +35,9 @@ class RecognitionHooks(Protocol):
     def on_start_of_speech(self, ev: vad.VADEvent) -> None: ...
     def on_vad_inference_done(self, ev: vad.VADEvent) -> None: ...
     def on_end_of_speech(self, ev: vad.VADEvent) -> None: ...
-    def on_end_of_speech_stt(self, ev: stt.SpeechEvent) -> None: ...
     def on_interim_transcript(self, ev: stt.SpeechEvent) -> None: ...
     def on_final_transcript(self, ev: stt.SpeechEvent) -> None: ...
-    async def on_end_of_turn(self, info: _EndOfTurnInfo) -> None: ...
+    async def on_end_of_turn(self, info: _EndOfTurnInfo) -> bool: ...
 
     def retrieve_chat_ctx(self) -> llm.ChatContext: ...
 
@@ -71,6 +70,7 @@ class AudioRecognition:
         self._sample_rate: float | None = None
 
         self._speaking = False
+        self._stt_ended_speech = False  # Track if STT has ended speech
         self._last_speaking_time: float = 0
         self._last_final_transcript_time: float = 0
         self._audio_transcript = ""
@@ -151,6 +151,7 @@ class AudioRecognition:
         self._audio_transcript = ""
         self._audio_interim_transcript = ""
         self._user_turn_committed = False
+        self._stt_ended_speech = False  # Reset the flag
 
         # reset stt to clear the buffer from previous user turn
         stt = self._stt
@@ -190,32 +191,47 @@ class AudioRecognition:
 
         self._commit_user_turn_atask = asyncio.create_task(_commit_user_turn())
 
-    async def _on_stt_event(self, ev: stt.SpeechEvent) -> None:
-        # Log all incoming STT events at the very beginning
-        logger.debug(f"[STT_EVENT] Received event: type={ev.type}, request_id='{ev.request_id}', alternatives_count={len(ev.alternatives)}")
-        if ev.alternatives:
-            logger.debug(f"[STT_EVENT] First alternative text: '{ev.alternatives[0].text}'")
-        logger.debug(f"STT event received: type={ev.type}, speaking={self._speaking}, manual_turn_detection={self._manual_turn_detection}, user_turn_committed={self._user_turn_committed}")
-        
-        if self._manual_turn_detection and self._user_turn_committed:
-            logger.debug(f"[TURN_DETECTION] Manual turn detection is enabled and user turn is committed")
-            logger.debug(f"[TURN_DETECTION] Event type: {ev.type}, EOU task: {self._end_of_turn_task}")
-            
-            if self._end_of_turn_task is None:
-                logger.debug("[TURN_DETECTION] Ignoring because EOU task is None")
-            elif self._end_of_turn_task.done():
-                logger.debug(f"[TURN_DETECTION] Ignoring because EOU task is done: {self._end_of_turn_task.done()}")
-            elif ev.type == stt.SpeechEventType.INTERIM_TRANSCRIPT:
-                logger.debug("[TURN_DETECTION] Ignoring because event is INTERIM_TRANSCRIPT")
-            
-            if (self._end_of_turn_task is None or 
-                self._end_of_turn_task.done() or 
-                ev.type == stt.SpeechEventType.INTERIM_TRANSCRIPT):
-                logger.debug(f"[TURN_DETECTION] Ignoring STT event type: {ev.type}")
-                return
+    @property
+    def current_transcript(self) -> str:
+        """
+        Transcript for this turn, including interim transcript if available.
+        """
+        if self._audio_interim_transcript:
+            return self._audio_transcript + " " + self._audio_interim_transcript
+        return self._audio_transcript
 
-        if ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT:
-            logger.debug("Processing FINAL_TRANSCRIPT event")
+    async def _on_stt_event(self, ev: stt.SpeechEvent) -> None:
+        # Only log key STT events
+        if ev.type in (stt.SpeechEventType.FINAL_TRANSCRIPT, stt.SpeechEventType.END_OF_SPEECH, stt.SpeechEventType.START_OF_SPEECH):
+            logger.debug(f"STT: {ev.type.name} - '{ev.alternatives[0].text if ev.alternatives else ''}'")
+        if (
+            self._manual_turn_detection
+            and self._user_turn_committed
+            and (
+                self._end_of_turn_task is None
+                or self._end_of_turn_task.done()
+                or ev.type == stt.SpeechEventType.INTERIM_TRANSCRIPT
+            )
+        ):
+            # ignore stt event if user turn already committed and EOU task is done
+            # or it's an interim transcript
+            logger.debug("Skipping STT event due to manual turn detection and committed turn")
+            return
+
+        if ev.type == stt.SpeechEventType.END_OF_SPEECH:
+            # Handle END_OF_SPEECH from STT
+            self._stt_ended_speech = True
+            self._speaking = False
+            self._last_speaking_time = time.time()
+
+            if self._vad_atask and not self._vad_atask.done():
+                self._vad_atask.cancel()
+            
+            if not self._manual_turn_detection:
+                chat_ctx = self._hooks.retrieve_chat_ctx().copy()
+                self._run_eou_detection(chat_ctx)
+                
+        elif ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT:
             self._hooks.on_final_transcript(ev)
             transcript = ev.alternatives[0].text
             self._last_language = ev.alternatives[0].language
@@ -243,61 +259,22 @@ class AudioRecognition:
             if not self._speaking:
                 if not self._vad:
                     # vad disabled, use stt timestamp
-                    # TODO: this would screw up transcription latency metrics
-                    # but we'll live with it for now.
-                    # the correct way is to ensure STT fires SpeechEventType.END_OF_SPEECH
-                    # and using that timestamp for _last_speaking_time
                     self._last_speaking_time = time.time()
 
                 if not self._manual_turn_detection or self._user_turn_committed:
                     chat_ctx = self._hooks.retrieve_chat_ctx().copy()
                     self._run_eou_detection(chat_ctx)
+                    
         elif ev.type == stt.SpeechEventType.INTERIM_TRANSCRIPT:
             self._hooks.on_interim_transcript(ev)
             self._audio_interim_transcript = ev.alternatives[0].text
-            
-        elif ev.type == stt.SpeechEventType.END_OF_SPEECH:
-            logger.debug("Handling END_OF_SPEECH event from STT")
-            logger.debug(f"Current speaking state: {self._speaking}, last_speaking_time: {self._last_speaking_time}")
-            
-            if not self._speaking:
-                logger.debug("Received END_OF_SPEECH but not currently speaking, ignoring")
-                return
-                
-            current_time = time.time()
-            speech_duration = current_time - self._last_speaking_time
-            logger.debug(f"Processing STT END_OF_SPEECH at {current_time}, speech_duration={speech_duration:.3f}s")
-            
-            try:
-                # Call the STT-specific end of speech handler
-                self._hooks.on_end_of_speech_stt(ev)
-                logger.debug("Successfully processed STT end of speech event")
-                
-                # Also update the speaking state
-                logger.debug(f"[SPEAKING] Setting _speaking to False (from STT END_OF_SPEECH), was speaking for {speech_duration:.3f}s")
-                self._speaking = False
-                self._last_speaking_time = current_time
-                
-                if not self._manual_turn_detection:
-                    logger.debug("Running EOU detection after STT END_OF_SPEECH")
-                    try:
-                        chat_ctx = self._hooks.retrieve_chat_ctx().copy()
-                        self._run_eou_detection(chat_ctx)
-                    except Exception as e:
-                        logger.error(f"Error in EOU detection: {e}", exc_info=True)
-                        raise
-                else:
-                    logger.debug("Skipping EOU detection due to manual turn detection")
-                    
-            except Exception as e:
-                logger.error(f"Error in on_end_of_speech_stt hook: {e}", exc_info=True)
-                raise
 
     async def _on_vad_event(self, ev: vad.VADEvent) -> None:
         if ev.type == vad.VADEventType.START_OF_SPEECH:
+            self._stt_ended_speech = False  # Reset the flag to allow new speech detection
             self._hooks.on_start_of_speech(ev)
-            logger.debug("[SPEAKING] Setting _speaking to True (from VAD START_OF_SPEECH)")
             self._speaking = True
+            logger.debug("VAD: Speech started")
 
             if self._end_of_turn_task is not None:
                 self._end_of_turn_task.cancel()
@@ -307,21 +284,23 @@ class AudioRecognition:
             self._hooks.on_vad_inference_done(ev)
 
         elif ev.type == vad.VADEventType.END_OF_SPEECH:
+            if self._stt_ended_speech:
+                # If STT already ended speech, ignore VAD's start
+                return
             self._hooks.on_end_of_speech(ev)
             self._speaking = False
             # when VAD fires END_OF_SPEECH, it already waited for the silence_duration
             self._last_speaking_time = time.time() - ev.silence_duration
 
             if not self._manual_turn_detection:
-                logger.debug("Running EOU detection after END_OF_SPEECH")
                 chat_ctx = self._hooks.retrieve_chat_ctx().copy()
                 self._run_eou_detection(chat_ctx)
 
     def _run_eou_detection(self, chat_ctx: llm.ChatContext) -> None:
         if self._stt and not self._audio_transcript and not self._manual_turn_detection:
-            # stt enabled but no transcript yet
             return
-
+            
+        logger.debug(f"Turn detection - Transcript: '{self._audio_transcript}'")
         chat_ctx = chat_ctx.copy()
         chat_ctx.add_message(role="user", content=self._audio_transcript)
         turn_detector = (
@@ -354,7 +333,7 @@ class AudioRecognition:
             await asyncio.sleep(max(extra_sleep, 0))
 
             tracing.Tracing.log_event("end of user turn", {"transcript": self._audio_transcript})
-            await self._hooks.on_end_of_turn(
+            committed = await self._hooks.on_end_of_turn(
                 _EndOfTurnInfo(
                     new_transcript=self._audio_transcript,
                     transcription_delay=max(
@@ -363,7 +342,9 @@ class AudioRecognition:
                     end_of_utterance_delay=time.time() - last_speaking_time,
                 )
             )
-            self._audio_transcript = ""
+            if committed:
+                # clear the transcript if the user turn was committed
+                self._audio_transcript = ""
 
         if self._end_of_turn_task is not None:
             # TODO(theomonnom): disallow cancel if the extra sleep is done
@@ -392,13 +373,7 @@ class AudioRecognition:
         if isinstance(node, AsyncIterable):
             async for ev in node:
                 assert isinstance(ev, stt.SpeechEvent), "STT node must yield SpeechEvent"
-                logger.debug(f"[STT_TASK] Processing STT event: type={ev.type}, request_id='{ev.request_id}'")
-                try:
-                    await self._on_stt_event(ev)
-                    logger.debug(f"[STT_TASK] Successfully processed STT event: type={ev.type}")
-                except Exception as e:
-                    logger.error(f"[STT_TASK] Error processing STT event: {e}", exc_info=True)
-                    raise
+                await self._on_stt_event(ev)
 
     @utils.log_exceptions(logger=logger)
     async def _vad_task(
