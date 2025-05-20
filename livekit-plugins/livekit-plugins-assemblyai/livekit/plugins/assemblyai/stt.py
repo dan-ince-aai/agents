@@ -378,14 +378,26 @@ class SpeechStream(stt.SpeechStream):
             alts = live_transcription_to_speech_data(ENGLISH, data)
             end_of_turn = data.get("end_of_turn")
             if end_of_turn: 
+                logger.debug("Sending FINAL_TRANSCRIPT and END_OF_SPEECH events")
+                
+                # Create and send FINAL_TRANSCRIPT event
                 final_event = stt.SpeechEvent(
                     type=stt.SpeechEventType.FINAL_TRANSCRIPT,
                     alternatives=alts,
                 )
                 self._final_events.append(final_event)
                 self._event_ch.send_nowait(final_event)
-                self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH))
-                logger.debug("AssemblyAI end of speech")
+                logger.debug(f"Sent FINAL_TRANSCRIPT event: {final_event}")
+                
+                # Create and send END_OF_SPEECH event
+                end_event = stt.SpeechEvent(
+                    type=stt.SpeechEventType.END_OF_SPEECH,
+                    alternatives=[],
+                )
+                self._event_ch.send_nowait(end_event)
+                logger.debug(f"Sent END_OF_SPEECH event: {end_event}")
+                
+                logger.debug("AssemblyAI end of speech processing complete")
 
             else:
                 if data['turn_order'] not in self._utterance_mapping:

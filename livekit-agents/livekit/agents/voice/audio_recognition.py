@@ -247,28 +247,45 @@ class AudioRecognition:
             self._audio_interim_transcript = ev.alternatives[0].text
             
         elif ev.type == stt.SpeechEventType.END_OF_SPEECH:
-            logger.debug("Processing END_OF_SPEECH event")
+            logger.debug("Handling END_OF_SPEECH event")
+            logger.debug(f"Current speaking state: {self._speaking}, last_speaking_time: {self._last_speaking_time}")
+            
+            if not self._speaking:
+                logger.debug("Received END_OF_SPEECH but not currently speaking, ignoring")
+                return
+                
             current_time = time.time()
-            logger.debug(f"Creating VADEvent for END_OF_SPEECH at {current_time}")
-            self._hooks.on_end_of_speech(vad.VADEvent(
-                type=vad.VADEventType.END_OF_SPEECH,
-                samples_index=0,
-                timestamp=current_time,
-                speech_duration=current_time - self._last_speaking_time,
-                silence_duration=0.0,
-                frames=[],
-                speaking=False,
-                raw_accumulated_silence=0.0,
-                raw_accumulated_speech=0.0
-            ))
-            logger.debug("VADEvent created and sent to hooks")
+            speech_duration = current_time - self._last_speaking_time
+            logger.debug(f"Creating VADEvent for END_OF_SPEECH at {current_time}, speech_duration={speech_duration:.3f}s")
+            
+            try:
+                self._hooks.on_end_of_speech(vad.VADEvent(
+                    type=vad.VADEventType.END_OF_SPEECH,
+                    samples_index=0,
+                    timestamp=current_time,
+                    speech_duration=speech_duration,
+                    silence_duration=0.0,
+                    frames=[],
+                    speaking=False,
+                    raw_accumulated_silence=0.0,
+                    raw_accumulated_speech=0.0
+                ))
+                logger.debug("VADEvent successfully sent to hooks")
+            except Exception as e:
+                logger.error(f"Error in on_end_of_speech hook: {e}")
+                raise
+                
             self._speaking = False
             self._last_speaking_time = current_time
             
             if not self._manual_turn_detection:
                 logger.debug("Running EOU detection after END_OF_SPEECH")
-                chat_ctx = self._hooks.retrieve_chat_ctx().copy()
-                self._run_eou_detection(chat_ctx)
+                try:
+                    chat_ctx = self._hooks.retrieve_chat_ctx().copy()
+                    self._run_eou_detection(chat_ctx)
+                except Exception as e:
+                    logger.error(f"Error in EOU detection: {e}")
+                    raise
             else:
                 logger.debug("Skipping EOU detection due to manual turn detection")
 
