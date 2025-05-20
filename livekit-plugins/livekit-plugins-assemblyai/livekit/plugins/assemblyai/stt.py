@@ -378,7 +378,7 @@ class SpeechStream(stt.SpeechStream):
             alts = live_transcription_to_speech_data(ENGLISH, data)
             end_of_turn = data.get("end_of_turn")
             if end_of_turn: 
-                logger.debug("Sending FINAL_TRANSCRIPT and END_OF_SPEECH events")
+                logger.debug("end of turn")
                 
                 # Create and send FINAL_TRANSCRIPT event
                 final_event = stt.SpeechEvent(
@@ -413,6 +413,7 @@ class SpeechStream(stt.SpeechStream):
                     alternatives=alts,
                 )
                 self._event_ch.send_nowait(interim_event)
+                logger.debug("partial received")
                 
                 if self._speech_duration > 0:
                     usage_event = stt.SpeechEvent(
@@ -463,4 +464,3 @@ def live_transcription_to_speech_data(
             text=data["transcript"],
         ),
     ]
-
