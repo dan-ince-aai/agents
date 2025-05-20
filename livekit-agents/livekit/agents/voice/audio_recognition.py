@@ -190,6 +190,8 @@ class AudioRecognition:
         self._commit_user_turn_atask = asyncio.create_task(_commit_user_turn())
 
     async def _on_stt_event(self, ev: stt.SpeechEvent) -> None:
+        logger.debug(f"STT event received: type={ev.type}, speaking={self._speaking}, manual_turn_detection={self._manual_turn_detection}, user_turn_committed={self._user_turn_committed}")
+        
         if (
             self._manual_turn_detection
             and self._user_turn_committed
@@ -199,11 +201,11 @@ class AudioRecognition:
                 or ev.type == stt.SpeechEventType.INTERIM_TRANSCRIPT
             )
         ):
-            # ignore stt event if user turn already committed and EOU task is done
-            # or it's an interim transcript
+            logger.debug("Ignoring STT event due to manual turn detection and committed turn")
             return
 
         if ev.type == stt.SpeechEventType.FINAL_TRANSCRIPT:
+            logger.debug("Processing FINAL_TRANSCRIPT event")
             self._hooks.on_final_transcript(ev)
             transcript = ev.alternatives[0].text
             self._last_language = ev.alternatives[0].language
@@ -245,25 +247,30 @@ class AudioRecognition:
             self._audio_interim_transcript = ev.alternatives[0].text
             
         elif ev.type == stt.SpeechEventType.END_OF_SPEECH:
-            logger.debug("End of speech received STT event")
+            logger.debug("Processing END_OF_SPEECH event")
             current_time = time.time()
+            logger.debug(f"Creating VADEvent for END_OF_SPEECH at {current_time}")
             self._hooks.on_end_of_speech(vad.VADEvent(
                 type=vad.VADEventType.END_OF_SPEECH,
-                samples_index=0,  # Not used for END_OF_SPEECH
+                samples_index=0,
                 timestamp=current_time,
-                speech_duration=0.0,  # Not available from STT
-                silence_duration=0.0,  # Not available from STT
-                frames=[],  # No frames available from STT
+                speech_duration=current_time - self._last_speaking_time,
+                silence_duration=0.0,
+                frames=[],
                 speaking=False,
                 raw_accumulated_silence=0.0,
                 raw_accumulated_speech=0.0
             ))
+            logger.debug("VADEvent created and sent to hooks")
             self._speaking = False
             self._last_speaking_time = current_time
             
             if not self._manual_turn_detection:
+                logger.debug("Running EOU detection after END_OF_SPEECH")
                 chat_ctx = self._hooks.retrieve_chat_ctx().copy()
                 self._run_eou_detection(chat_ctx)
+            else:
+                logger.debug("Skipping EOU detection due to manual turn detection")
 
     async def _on_vad_event(self, ev: vad.VADEvent) -> None:
         if ev.type == vad.VADEventType.START_OF_SPEECH:
@@ -284,6 +291,7 @@ class AudioRecognition:
             self._last_speaking_time = time.time() - ev.silence_duration
 
             if not self._manual_turn_detection:
+                logger.debug("Running EOU detection after END_OF_SPEECH")
                 chat_ctx = self._hooks.retrieve_chat_ctx().copy()
                 self._run_eou_detection(chat_ctx)
 
