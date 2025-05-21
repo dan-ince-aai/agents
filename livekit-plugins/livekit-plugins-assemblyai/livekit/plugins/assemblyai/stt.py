@@ -376,14 +376,18 @@ class SpeechStream(stt.SpeechStream):
 
             logger.debug("AssemblyAI turn received: %s", str(data))
             alts = live_transcription_to_speech_data(ENGLISH, data)
+            transcript = alts[0].text
             end_of_turn = data.get("end_of_turn")
-            if end_of_turn: 
+            if transcript:
                 final_event = stt.SpeechEvent(
                     type=stt.SpeechEventType.FINAL_TRANSCRIPT,
                     alternatives=alts,
                 )
                 self._final_events.append(final_event)
                 self._event_ch.send_nowait(final_event)
+
+            if end_of_turn: 
+                self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH))
                 self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH))
 
             else:
