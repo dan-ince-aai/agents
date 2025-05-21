@@ -392,8 +392,7 @@ class SpeechStream(stt.SpeechStream):
                         "length_of_words": 0,
                          "text": "",
                     }
-                    start_event = stt.SpeechEvent(type=stt.SpeechEventType.START_OF_SPEECH)
-                    
+                
                 interim_event = stt.SpeechEvent(
                     type=stt.SpeechEventType.INTERIM_TRANSCRIPT,
                     request_id=str(data['turn_order']),

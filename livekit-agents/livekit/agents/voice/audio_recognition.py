@@ -211,7 +211,7 @@ class AudioRecognition:
                 return
 
             logger.debug(
-                "received user transcript",
+                "received final transcript",
                 extra={"user_transcript": transcript, "language": self._last_language},
             )
 
@@ -265,6 +265,7 @@ class AudioRecognition:
             if not self._manual_turn_detection:
                 chat_ctx = self._hooks.retrieve_chat_ctx().copy()
                 self._run_eou_detection(chat_ctx)
+                logger.debug("VAD end of speech")
 
     def _run_eou_detection(self, chat_ctx: llm.ChatContext) -> None:
         if self._stt and not self._audio_transcript and not self._manual_turn_detection:
