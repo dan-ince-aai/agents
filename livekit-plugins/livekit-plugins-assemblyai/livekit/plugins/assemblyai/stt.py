@@ -378,14 +378,7 @@ class SpeechStream(stt.SpeechStream):
         elif message_type == "Turn":
 
             logger.debug("AssemblyAI turn received: %s", str(data))
-            # Define alts_full for potential use in interim logic or if needed for full final
-            # TODO: Investigate why self._opts.language is not available as expected from STTOptions inheritance.
-            # Temporarily hardcoding to 'en-US'.
-            alts_full = live_transcription_to_speech_data("en-US", data)
-            # transcript_full_text = alts_full[0].text if alts_full else ""
-
-            current_words_list = data.get("words", [])
-            current_words_list = [word for word in current_words_list if word.get("word_is_final", False)]
+            current_words_list = [word for word in data.get("words", []) if word.get("word_is_final", False)]
             end_of_turn = data.get("end_of_turn")
 
             if current_words_list:  # Only process if there are words for delta final transcript

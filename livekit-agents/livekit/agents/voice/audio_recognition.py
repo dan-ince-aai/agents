@@ -317,7 +317,8 @@ class AudioRecognition:
 
         if self._end_of_turn_task is not None:
             # TODO(theomonnom): disallow cancel if the extra sleep is done
-            self._end_of_turn_task.cancel()
+            if extra_sleep > 0:
+                self._end_of_turn_task.cancel()
 
         # copy the last_speaking_time before awaiting (the value can change)
         self._end_of_turn_task = asyncio.create_task(_bounce_eou_task(self._last_speaking_time))
