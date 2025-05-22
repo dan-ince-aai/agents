@@ -378,7 +378,27 @@ class SpeechStream(stt.SpeechStream):
         elif message_type == "Turn":
 
             logger.debug("AssemblyAI turn received: %s", str(data))
-            current_words_list = [word for word in data.get("words", []) if word.get("word_is_final", False)]
+            
+            # Get all words from the message
+            all_words = data.get("words", [])
+            
+            # Process non-final words as interim transcript
+            interim_words = [word for word in all_words if not word.get("word_is_final", False)]
+            if interim_words:
+                interim_text = " ".join(w["text"] for w in interim_words)
+                interim_speech_data = stt.SpeechData(
+                    language="en-US",  # TODO: Revert to self._opts.language once STTOptions issue is resolved
+                    text=interim_text
+                )
+                interim_event = stt.SpeechEvent(
+                    type=stt.SpeechEventType.INTERIM_TRANSCRIPT,
+                    request_id=str(data.get('turn_order', 0)),
+                    alternatives=[interim_speech_data]
+                )
+                self._event_ch.send_nowait(interim_event)
+            
+            # Filter to only final words for final transcript processing
+            current_words_list = [word for word in all_words if word.get("word_is_final", False)]
             end_of_turn = data.get("end_of_turn")
 
             if current_words_list:  # Only process if there are words for delta final transcript
