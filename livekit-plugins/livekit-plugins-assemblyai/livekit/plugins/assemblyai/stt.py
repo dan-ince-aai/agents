@@ -434,24 +434,7 @@ class SpeechStream(stt.SpeechStream):
                     logger.debug("AssemblyAI: Sent END_OF_SPEECH event.")
                 
                 self._last_processed_word_count = 0  # Reset for the next full turn
-            else: # Not end_of_turn (interim transcript)
-                # If we receive an interim transcript, it means a new utterance might be starting
-                # or the current one is continuing. Clear the last EOS sent time so a subsequent
-                # end_of_turn for this ongoing speech can fire immediately when it's truly final.
-                self._last_eos_sent_time = None
-                if data['turn_order'] not in self._utterance_mapping:
-                    self._utterance_mapping[data['turn_order']] = {
-                        "length_of_words": 0,
-                         "text": "",
-                    }
-                
-                interim_event = stt.SpeechEvent(
-                    type=stt.SpeechEventType.INTERIM_TRANSCRIPT,
-                    request_id=str(data['turn_order']),
-                    alternatives=alts_full,
-                )
-                self._event_ch.send_nowait(interim_event)
-                
+
                 if self._speech_duration > 0:
                     usage_event = stt.SpeechEvent(
                         type=stt.SpeechEventType.RECOGNITION_USAGE,
