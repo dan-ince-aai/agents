@@ -210,6 +210,9 @@ class SpeechStream(stt.SpeechStream):
         # debounce for END_OF_SPEECH events
         self._last_eos_sent_time: float | None = None
         self._min_time_between_eos_s = 0.25  # minimum time between END_OF_SPEECH events
+        
+        # For reconnection logic
+        self._reconnect_event = asyncio.Event()
 
     def update_options(
         self,
