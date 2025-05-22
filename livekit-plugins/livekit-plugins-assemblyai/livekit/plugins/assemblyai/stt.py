@@ -204,6 +204,7 @@ class SpeechStream(stt.SpeechStream):
         # keep a list of final transcripts to combine them inside the END_OF_SPEECH event
         self._final_events: list[SpeechEvent] = []
         self._reconnect_event = asyncio.Event()
+        self._last_processed_word_count = 0  # For delta final transcripts
 
     def update_options(
         self,
@@ -375,21 +376,49 @@ class SpeechStream(stt.SpeechStream):
         elif message_type == "Turn":
 
             logger.debug("AssemblyAI turn received: %s", str(data))
-            alts = live_transcription_to_speech_data(ENGLISH, data)
-            transcript = alts[0].text
+            # Define alts and transcript for potential use in interim logic later
+            alts_full = live_transcription_to_speech_data(ENGLISH, data)
+            # transcript_full_text = alts_full[0].text if alts_full else ""
+
+            current_words_list = data.get("words", [])
             end_of_turn = data.get("end_of_turn")
-            if transcript:
-                final_event = stt.SpeechEvent(
-                    type=stt.SpeechEventType.FINAL_TRANSCRIPT,
-                    alternatives=alts,
-                )
-                self._final_events.append(final_event)
-                self._event_ch.send_nowait(final_event)
 
-            if end_of_turn: 
-                self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH))
-                self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH))
+            if current_words_list:  # Only process if there are words for delta final transcript
+                newly_finalized_word_objects = []
+                current_total_word_count = len(current_words_list)
 
+                # Determine if this is a continuation, correction, or new segment
+                if current_total_word_count > self._last_processed_word_count:
+                    # Assumes the prefix of current_words_list matches already processed words
+                    newly_finalized_word_objects = current_words_list[self._last_processed_word_count:]
+                elif current_total_word_count > 0 and current_total_word_count <= self._last_processed_word_count:
+                    # Transcript changed/shortened, or it's a new segment replacing an old one.
+                    # Treat all current words as the new delta.
+                    logger.debug("AssemblyAI: Transcript changed/shortened, processing all current words as new delta.")
+                    newly_finalized_word_objects = current_words_list
+                    self._last_processed_word_count = 0 # Reset base for count update
+
+                if newly_finalized_word_objects:
+                    delta_text = " ".join(w["text"] for w in newly_finalized_word_objects)
+                    delta_start_time = newly_finalized_word_objects[0]["start"] / 1000.0
+                    delta_end_time = newly_finalized_word_objects[-1]["end"] / 1000.0
+                    confidences = [w.get("confidence", 0.0) for w in newly_finalized_word_objects if w.get("confidence") is not None]
+                    delta_confidence = min(confidences) if confidences else 0.0
+
+                    delta_speech_data = stt.SpeechData(
+                        language=ENGLISH,  # Replace with self._language if available
+                        text=delta_text,
+                        start_time=delta_start_time,
+                        end_time=delta_end_time,
+                        confidence=delta_confidence
+                    )
+                    final_event = stt.SpeechEvent(type=stt.SpeechEventType.FINAL_TRANSCRIPT, alternatives=[delta_speech_data])
+                    self._event_ch.send_nowait(final_event)
+                    self._last_processed_word_count += len(newly_finalized_word_objects)
+            
+            if end_of_turn:
+                self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH))
+                self._last_processed_word_count = 0  # Reset for the next full turn
             else:
                 if data['turn_order'] not in self._utterance_mapping:
                     self._utterance_mapping[data['turn_order']] = {
