@@ -378,7 +378,7 @@ class SpeechStream(stt.SpeechStream):
             alts = live_transcription_to_speech_data(ENGLISH, data)
             if end_of_turn:
                 final_evt = SpeechEvent(
-                    type=SpeechEventType.FINAL_TRANSCRIPT,
+                    type=stt.SpeechEventType.FINAL_TRANSCRIPT,
                     request_id=str(data.get("turn_order", "")),
                     alternatives=alts,
                 )
