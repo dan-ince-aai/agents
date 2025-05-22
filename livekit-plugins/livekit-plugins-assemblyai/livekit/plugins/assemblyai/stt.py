@@ -385,6 +385,7 @@ class SpeechStream(stt.SpeechStream):
             # transcript_full_text = alts_full[0].text if alts_full else ""
 
             current_words_list = data.get("words", [])
+            current_words_list = [word for word in current_words_list if word.get("word_is_final", False)]
             end_of_turn = data.get("end_of_turn")
 
             if current_words_list:  # Only process if there are words for delta final transcript
