@@ -374,27 +374,9 @@ class SpeechStream(stt.SpeechStream):
 
         elif message_type == "Turn":
 
-            #end_of_turn = bool(data.get("end_of_turn"))
-            if data.get("end_of_turn_confidence") > self._opts.end_of_turn_confidence_threshold:
-                end_of_turn = True
-            else:
-                end_of_turn = False
+            end_of_turn = bool(data.get("end_of_turn"))
             alts = live_transcription_to_speech_data(ENGLISH, data)
-            #logger.debug("AssemblyAI turn received: %s", str(data))
-            
-            if not self._speaking and alts and alts[0].text:
-                self._speaking = True
-                self._event_ch.send_nowait(SpeechEvent(type=SpeechEventType.START_OF_SPEECH))
-
-            if not end_of_turn:
-                interim_evt = SpeechEvent(
-                    type=SpeechEventType.INTERIM_TRANSCRIPT,
-                    request_id=str(data.get("turn_order", "")),
-                    alternatives=alts,
-                )
-                self._event_ch.send_nowait(interim_evt)
-            
-            else:
+            if end_of_turn:
                 final_evt = SpeechEvent(
                     type=SpeechEventType.FINAL_TRANSCRIPT,
                     request_id=str(data.get("turn_order", "")),
@@ -402,10 +384,6 @@ class SpeechStream(stt.SpeechStream):
                 )
                 self._final_events.append(final_evt)
                 self._event_ch.send_nowait(final_evt)
-
-                if self._speaking:
-                    self._speaking = False
-                    self._event_ch.send_nowait(SpeechEvent(type=SpeechEventType.END_OF_SPEECH))
 
             if self._speech_duration > 0:
                 usage_event = stt.SpeechEvent(
