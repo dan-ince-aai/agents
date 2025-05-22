@@ -202,11 +202,14 @@ class SpeechStream(stt.SpeechStream):
         self._utterance_mapping = {}
 
         # keep a list of final transcripts to combine them inside the END_OF_SPEECH event
-        self._final_events: list[SpeechEvent] = []
-        self._reconnect_event = asyncio.Event()
-        self._last_processed_word_count = 0  # For delta final transcripts
-        self._last_eos_sent_time: Optional[float] = None
-        self._min_time_between_eos_s: float = 0.25  # Min seconds between sending EOS events
+        self._final_transcripts: list[str] = []
+
+        # Track the last seen words to detect changes
+        self._last_seen_words = {}  # Maps word position to its last seen text
+
+        # debounce for END_OF_SPEECH events
+        self._last_eos_sent_time: float | None = None
+        self._min_time_between_eos_s = 0.25  # minimum time between END_OF_SPEECH events
 
     def update_options(
         self,
@@ -376,78 +379,63 @@ class SpeechStream(stt.SpeechStream):
             logger.debug("AssemblyAI session started: %s", str(data))
 
         elif message_type == "Turn":
-
             logger.debug("AssemblyAI turn received: %s", str(data))
             
             # Get all words from the message
             all_words = data.get("words", [])
             
-            # Process non-final words as interim transcript
-            interim_words = [word for word in all_words if not word.get("word_is_final", False)]
-            if interim_words:
-                interim_text = " ".join(w["text"] for w in interim_words)
-                interim_speech_data = stt.SpeechData(
-                    language="en-US",  # TODO: Revert to self._opts.language once STTOptions issue is resolved
-                    text=interim_text
-                )
-                interim_event = stt.SpeechEvent(
-                    type=stt.SpeechEventType.INTERIM_TRANSCRIPT,
-                    request_id=str(data.get('turn_order', 0)),
-                    alternatives=[interim_speech_data]
-                )
-                self._event_ch.send_nowait(interim_event)
-            
-            # Filter to only final words for final transcript processing
-            current_words_list = [word for word in all_words if word.get("word_is_final", False)]
-            end_of_turn = data.get("end_of_turn")
-
-            if current_words_list:  # Only process if there are words for delta final transcript
-                newly_finalized_word_objects = []
-                current_total_word_count = len(current_words_list)
-
-                # Determine if this is a continuation, correction, or new segment
-                if current_total_word_count > self._last_processed_word_count:
-                    # Assumes the prefix of current_words_list matches already processed words
-                    newly_finalized_word_objects = current_words_list[self._last_processed_word_count:]
-                elif current_total_word_count > 0 and current_total_word_count < self._last_processed_word_count:
-                    # Transcript changed/shortened, or it's a new segment replacing an old one.
-                    # Treat all current words as the new delta.
-                    logger.debug("AssemblyAI: Transcript changed/shortened, processing all current words as new delta.")
-                    newly_finalized_word_objects = current_words_list
-                    self._last_processed_word_count = 0 # Reset base for count update
-
-                if newly_finalized_word_objects:
-                    delta_text = " ".join(w["text"] for w in newly_finalized_word_objects)
-                    delta_start_time = newly_finalized_word_objects[0]["start"] / 1000.0
-                    delta_end_time = newly_finalized_word_objects[-1]["end"] / 1000.0
-                    confidences = [w.get("confidence", 0.0) for w in newly_finalized_word_objects if w.get("confidence") is not None]
-                    delta_confidence = min(confidences) if confidences else 0.0
-
-                    delta_speech_data = stt.SpeechData(
-                        language="en-US",  # TODO: Revert to self._opts.language once STTOptions issue is resolved.
-                        text=delta_text,
-                        start_time=delta_start_time,
-                        end_time=delta_end_time,
-                        confidence=delta_confidence
-                    )
-                    final_event = stt.SpeechEvent(type=stt.SpeechEventType.FINAL_TRANSCRIPT, alternatives=[delta_speech_data])
-                    self._event_ch.send_nowait(final_event)
-                    self._last_processed_word_count += len(newly_finalized_word_objects)
-            
-            if end_of_turn:
-                can_send_eos = True
-                if self._last_eos_sent_time is not None:
-                    elapsed_since_last_eos = asyncio.get_event_loop().time() - self._last_eos_sent_time
-                    if elapsed_since_last_eos < self._min_time_between_eos_s:
-                        can_send_eos = False
-                        logger.debug(f"AssemblyAI: Suppressing END_OF_SPEECH, last one was {elapsed_since_last_eos:.2f}s ago (threshold: {self._min_time_between_eos_s}s).")
-
-                if can_send_eos:
-                    self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH))
-                    self._last_eos_sent_time = asyncio.get_event_loop().time()
-                    logger.debug("AssemblyAI: Sent END_OF_SPEECH event.")
+            # Process each word to find token-level changes
+            for i, word in enumerate(all_words):
+                word_id = f"{data.get('turn_order', 0)}_{i}"  # Create a unique ID for this word position
+                word_text = word.get("text", "")
                 
-                self._last_processed_word_count = 0  # Reset for the next full turn
+                # Check if this is a new or updated word
+                if word_id in self._last_seen_words:
+                    # This position has been seen before - check if the word has changed/expanded
+                    last_text = self._last_seen_words[word_id]
+                    
+                    if word_text != last_text and word_text.startswith(last_text):
+                        # The word has expanded (e.g., "medi" -> "medicine")
+                        # Emit just the new part as a final transcript
+                        new_part = word_text[len(last_text):]
+                        
+                        # Only emit if there's actually new content
+                        if new_part:
+                            delta_speech_data = stt.SpeechData(
+                                language="en-US",  # TODO: Revert to self._opts.language once STTOptions issue is resolved
+                                text=new_part,
+                                start_time=word.get("start", 0) / 1000.0,
+                                end_time=word.get("end", 0) / 1000.0,
+                                confidence=word.get("confidence", 0.0)
+                            )
+                            final_event = stt.SpeechEvent(
+                                type=stt.SpeechEventType.FINAL_TRANSCRIPT, 
+                                alternatives=[delta_speech_data]
+                            )
+                            self._event_ch.send_nowait(final_event)
+                            logger.debug(f"AssemblyAI: Emitted token update: '{new_part}' (from '{last_text}' to '{word_text}')")
+                    
+                    # Note: We don't handle complete word changes/corrections since AssemblyAI
+                    # only emits immutable transcripts where words only grow and don't get replaced
+                
+                else:
+                    # This is a completely new word - emit it as a final transcript
+                    delta_speech_data = stt.SpeechData(
+                        language="en-US",  # TODO: Revert to self._opts.language once STTOptions issue is resolved
+                        text=word_text,
+                        start_time=word.get("start", 0) / 1000.0,
+                        end_time=word.get("end", 0) / 1000.0,
+                        confidence=word.get("confidence", 0.0)
+                    )
+                    final_event = stt.SpeechEvent(
+                        type=stt.SpeechEventType.FINAL_TRANSCRIPT, 
+                        alternatives=[delta_speech_data]
+                    )
+                    self._event_ch.send_nowait(final_event)
+                    logger.debug(f"AssemblyAI: Emitted new word: '{word_text}'")
+                
+                # Update our tracking dictionary with this word's current text
+                self._last_seen_words[word_id] = word_text
 
                 if self._speech_duration > 0:
                     usage_event = stt.SpeechEvent(
