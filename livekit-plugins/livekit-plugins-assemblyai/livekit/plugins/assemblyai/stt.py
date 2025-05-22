@@ -379,7 +379,7 @@ class SpeechStream(stt.SpeechStream):
 
             logger.debug("AssemblyAI turn received: %s", str(data))
             # Define alts_full for potential use in interim logic or if needed for full final
-            alts_full = live_transcription_to_speech_data(self._language, data)
+            alts_full = live_transcription_to_speech_data(self._opts.language, data)
             # transcript_full_text = alts_full[0].text if alts_full else ""
 
             current_words_list = data.get("words", [])
@@ -408,7 +408,7 @@ class SpeechStream(stt.SpeechStream):
                     delta_confidence = min(confidences) if confidences else 0.0
 
                     delta_speech_data = stt.SpeechData(
-                        language=self._language,
+                        language=self._opts.language,
                         text=delta_text,
                         start_time=delta_start_time,
                         end_time=delta_end_time,
