@@ -395,7 +395,7 @@ class SpeechStream(stt.SpeechStream):
                 if current_total_word_count > self._last_processed_word_count:
                     # Assumes the prefix of current_words_list matches already processed words
                     newly_finalized_word_objects = current_words_list[self._last_processed_word_count:]
-                elif current_total_word_count > 0 and current_total_word_count <= self._last_processed_word_count:
+                elif current_total_word_count > 0 and current_total_word_count < self._last_processed_word_count:
                     # Transcript changed/shortened, or it's a new segment replacing an old one.
                     # Treat all current words as the new delta.
                     logger.debug("AssemblyAI: Transcript changed/shortened, processing all current words as new delta.")
