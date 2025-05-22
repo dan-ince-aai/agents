@@ -44,10 +44,10 @@ from .log import logger
 
 ENGLISH = "en"
 DEFAULT_ENCODING = "pcm_s16le"
-DEFAULT_WORD_FINALIZATION_MAX_WAIT_TIME = 2400
+DEFAULT_WORD_FINALIZATION_MAX_WAIT_TIME = 400
 DEFAULT_END_OF_TURN_CONFIDENCE_THRESHOLD = 0.5
-DEFAULT_MIN_END_OF_TURN_SILENCE_WHEN_CONFIDENT = 400
-DEFAULT_MAX_TURN_SILENCE = 2400
+DEFAULT_MIN_END_OF_TURN_SILENCE_WHEN_CONFIDENT = 100
+DEFAULT_MAX_TURN_SILENCE = 700
 
 
 # Define bytes per frame for different encoding types
@@ -373,26 +373,45 @@ class SpeechStream(stt.SpeechStream):
             logger.debug("AssemblyAI session started: %s", str(data))
 
         elif message_type == "Turn":
-
-            end_of_turn = bool(data.get("end_of_turn"))
+            logger.debug("AssemblyAI turn received: %s", str(data))
             alts = live_transcription_to_speech_data(ENGLISH, data)
-            if end_of_turn:
-                final_evt = SpeechEvent(
+
+            #to do: fix to use confidence threshold instead of end_of_turn for now
+            end_of_turn = data.get("end_of_turn")
+            
+            if end_of_turn: 
+                final_event = stt.SpeechEvent(
                     type=stt.SpeechEventType.FINAL_TRANSCRIPT,
-                    request_id=str(data.get("turn_order", "")),
                     alternatives=alts,
                 )
-                self._final_events.append(final_evt)
-                self._event_ch.send_nowait(final_evt)
+                self._final_events.append(final_event)
+                self._event_ch.send_nowait(final_event)
+                self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH))
 
-            if self._speech_duration > 0:
-                usage_event = stt.SpeechEvent(
-                    type=stt.SpeechEventType.RECOGNITION_USAGE,
-                    alternatives=[],
-                    recognition_usage=stt.RecognitionUsage(audio_duration=self._speech_duration),
+            else:
+                if data['turn_order'] not in self._utterance_mapping:
+                    self._utterance_mapping[data['turn_order']] = {
+                        "length_of_words": 0,
+                         "text": "",
+                    }
+                    start_event = stt.SpeechEvent(type=stt.SpeechEventType.START_OF_SPEECH)
+                    self._event_ch.send_nowait(start_event)
+                    
+                interim_event = stt.SpeechEvent(
+                    type=stt.SpeechEventType.INTERIM_TRANSCRIPT,
+                    request_id=str(data['turn_order']),
+                    alternatives=alts,
                 )
-                self._event_ch.send_nowait(usage_event)
-                self._speech_duration = 0
+                self._event_ch.send_nowait(interim_event)
+                
+                if self._speech_duration > 0:
+                    usage_event = stt.SpeechEvent(
+                        type=stt.SpeechEventType.RECOGNITION_USAGE,
+                        alternatives=[],
+                        recognition_usage=stt.RecognitionUsage(audio_duration=self._speech_duration),
+                    )
+                    self._event_ch.send_nowait(usage_event)
+                    self._speech_duration = 0
 
         elif message_type == "Termination":
             if closing_ws:
@@ -434,3 +453,4 @@ def live_transcription_to_speech_data(
             text=data["transcript"],
         ),
     ]
+
