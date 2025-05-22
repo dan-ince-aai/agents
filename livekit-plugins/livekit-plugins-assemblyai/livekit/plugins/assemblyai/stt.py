@@ -375,7 +375,7 @@ class SpeechStream(stt.SpeechStream):
         elif message_type == "Turn":
 
             #end_of_turn = bool(data.get("end_of_turn"))
-            if data.get("confidence") > self._opts.end_of_turn_confidence_threshold:
+            if data.get("end_of_turn_confidence") > self._opts.end_of_turn_confidence_threshold:
                 end_of_turn = True
             else:
                 end_of_turn = False
