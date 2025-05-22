@@ -205,6 +205,8 @@ class SpeechStream(stt.SpeechStream):
         self._final_events: list[SpeechEvent] = []
         self._reconnect_event = asyncio.Event()
         self._last_processed_word_count = 0  # For delta final transcripts
+        self._last_eos_sent_time: Optional[float] = None
+        self._min_time_between_eos_s: float = 0.25  # Min seconds between sending EOS events
 
     def update_options(
         self,
@@ -376,8 +378,8 @@ class SpeechStream(stt.SpeechStream):
         elif message_type == "Turn":
 
             logger.debug("AssemblyAI turn received: %s", str(data))
-            # Define alts and transcript for potential use in interim logic later
-            alts_full = live_transcription_to_speech_data(ENGLISH, data)
+            # Define alts_full for potential use in interim logic or if needed for full final
+            alts_full = live_transcription_to_speech_data(self._language, data)
             # transcript_full_text = alts_full[0].text if alts_full else ""
 
             current_words_list = data.get("words", [])
@@ -406,7 +408,7 @@ class SpeechStream(stt.SpeechStream):
                     delta_confidence = min(confidences) if confidences else 0.0
 
                     delta_speech_data = stt.SpeechData(
-                        language=ENGLISH,  # Replace with self._language if available
+                        language=self._language,
                         text=delta_text,
                         start_time=delta_start_time,
                         end_time=delta_end_time,
@@ -417,9 +419,24 @@ class SpeechStream(stt.SpeechStream):
                     self._last_processed_word_count += len(newly_finalized_word_objects)
             
             if end_of_turn:
-                self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH))
+                can_send_eos = True
+                if self._last_eos_sent_time is not None:
+                    elapsed_since_last_eos = asyncio.get_event_loop().time() - self._last_eos_sent_time
+                    if elapsed_since_last_eos < self._min_time_between_eos_s:
+                        can_send_eos = False
+                        logger.debug(f"AssemblyAI: Suppressing END_OF_SPEECH, last one was {elapsed_since_last_eos:.2f}s ago (threshold: {self._min_time_between_eos_s}s).")
+
+                if can_send_eos:
+                    self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH))
+                    self._last_eos_sent_time = asyncio.get_event_loop().time()
+                    logger.debug("AssemblyAI: Sent END_OF_SPEECH event.")
+                
                 self._last_processed_word_count = 0  # Reset for the next full turn
-            else:
+            else: # Not end_of_turn (interim transcript)
+                # If we receive an interim transcript, it means a new utterance might be starting
+                # or the current one is continuing. Clear the last EOS sent time so a subsequent
+                # end_of_turn for this ongoing speech can fire immediately when it's truly final.
+                self._last_eos_sent_time = None
                 if data['turn_order'] not in self._utterance_mapping:
                     self._utterance_mapping[data['turn_order']] = {
                         "length_of_words": 0,
@@ -429,7 +446,7 @@ class SpeechStream(stt.SpeechStream):
                 interim_event = stt.SpeechEvent(
                     type=stt.SpeechEventType.INTERIM_TRANSCRIPT,
                     request_id=str(data['turn_order']),
-                    alternatives=alts,
+                    alternatives=alts_full,
                 )
                 self._event_ch.send_nowait(interim_event)
                 
