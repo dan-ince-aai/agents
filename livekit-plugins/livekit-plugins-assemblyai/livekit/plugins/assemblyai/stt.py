@@ -378,7 +378,8 @@ class SpeechStream(stt.SpeechStream):
 
         if message_type == "Begin":
             logger.debug("AssemblyAI session started: %s", str(data))
-            if self._opts.end_of_turn_confidence_threshold is not None and self._opts.end_of_turn_confidence_threshold > 0:
+            # Check if STT_TURN_DETECTION is available in the current version
+            if hasattr(stt.SpeechEventType, "STT_TURN_DETECTION") and self._opts.end_of_turn_confidence_threshold is not None and self._opts.end_of_turn_confidence_threshold > 0:
                 self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.STT_TURN_DETECTION))
 
         elif message_type == "Turn":
@@ -392,7 +393,6 @@ class SpeechStream(stt.SpeechStream):
                 end_of_turn = data.get("end_of_turn")
             
                 if end_of_turn: 
-                    # todo: fix to use confidence threshold instead of end_of_turn for now
                     # first we want to send end of speech event to set speaking = False
                     self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH)) 
                 
@@ -454,7 +454,7 @@ class SpeechStream(stt.SpeechStream):
                 if end_of_turn: 
                     # first we want to send end of speech event to set speaking = False
                     self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH)) 
-                
+            
                     # then we send the final transcript event to end the turn
                     final_event = stt.SpeechEvent(
                         type=stt.SpeechEventType.FINAL_TRANSCRIPT,

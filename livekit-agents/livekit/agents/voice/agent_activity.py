@@ -851,6 +851,12 @@ class AgentActivity(RecognitionHooks):
 
     def on_stt_end_of_speech(self, ev: stt.SpeechEvent) -> None:
         self._session._update_user_state("listening")
+        
+    def on_stt_turn_detection(self, ev: stt.SpeechEvent) -> None:
+        # This method is called when the STT engine signals it supports turn detection
+        # We don't need to do anything special here, as AudioRecognition will
+        # set its internal _stt_turn_detection flag
+        pass
 
     def on_interim_transcript(self, ev: stt.SpeechEvent) -> None:
         if isinstance(self.llm, llm.RealtimeModel) and self.llm.capabilities.user_transcription:
