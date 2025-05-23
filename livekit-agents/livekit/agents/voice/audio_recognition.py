@@ -39,6 +39,9 @@ class RecognitionHooks(Protocol):
     def on_end_of_speech(self, ev: vad.VADEvent) -> None: ...
     def on_interim_transcript(self, ev: stt.SpeechEvent) -> None: ...
     def on_final_transcript(self, ev: stt.SpeechEvent) -> None: ...
+    def on_stt_start_of_speech(self, ev: stt.SpeechEvent) -> None: ...
+    def on_stt_end_of_speech(self, ev: stt.SpeechEvent) -> None: ...
+    def on_stt_turn_detection(self, ev: stt.SpeechEvent) -> None: ...
     def on_end_of_turn(self, info: _EndOfTurnInfo) -> bool: ...
 
     def retrieve_chat_ctx(self) -> llm.ChatContext: ...
@@ -55,6 +58,7 @@ class AudioRecognition:
         min_endpointing_delay: float,
         max_endpointing_delay: float,
         manual_turn_detection: bool,
+        stt_turn_detection: bool = False,  # Added
     ) -> None:
         self._hooks = hooks
         self._audio_input_atask: asyncio.Task[None] | None = None
@@ -68,6 +72,7 @@ class AudioRecognition:
         self._stt = stt
         self._vad = vad
         self._manual_turn_detection = manual_turn_detection
+        self._stt_turn_detection = stt_turn_detection  # Added
         self._user_turn_committed = False
         self._sample_rate: int | None = None
 
@@ -192,6 +197,10 @@ class AudioRecognition:
         self._commit_user_turn_atask = asyncio.create_task(_commit_user_turn())
 
     @property
+    def stt_uses_end_of_turn_threshold(self) -> bool:
+        return self._stt_end_of_turn_threshold_active
+
+    @property
     def current_transcript(self) -> str:
         """
         Transcript for this turn, including interim transcript if available.
@@ -261,10 +270,33 @@ class AudioRecognition:
             self._hooks.on_interim_transcript(ev)
             self._audio_interim_transcript = ev.alternatives[0].text
 
+        elif ev.type == stt.SpeechEventType.END_OF_SPEECH:
+            if not self._stt_turn_detection:
+                # ignore STT END_OF_SPEECH if STT turn detection is disabled
+                return
+            self._hooks.on_stt_end_of_speech(ev)
+            if self._speaking:
+                self._speaking = False
+                self._last_speaking_time = time.time()
+        
+        elif ev.type == stt.SpeechEventType.START_OF_SPEECH:
+            self._hooks.on_stt_start_of_speech(ev)
+            if not self._speaking:
+                self._speaking = True
+            
+            if self._end_of_turn_task is not None:
+                self._end_of_turn_task.cancel()
+
+        elif ev.type == stt.SpeechEventType.STT_TURN_DETECTION:
+            self._hooks.on_stt_turn_detection(ev)
+            if not self._stt_turn_detection:
+                self._stt_turn_detection = True
+
     async def _on_vad_event(self, ev: vad.VADEvent) -> None:
         if ev.type == vad.VADEventType.START_OF_SPEECH:
             self._hooks.on_start_of_speech(ev)
-            self._speaking = True
+            if not self._speaking:
+                self._speaking = True
 
             if self._end_of_turn_task is not None:
                 self._end_of_turn_task.cancel()
@@ -274,6 +306,9 @@ class AudioRecognition:
             self._hooks.on_vad_inference_done(ev)
 
         elif ev.type == vad.VADEventType.END_OF_SPEECH:
+            if self._stt_turn_detection:
+                # ignore VAD END_OF_SPEECH if STT turn detection is enabled
+                return
             self._hooks.on_end_of_speech(ev)
             self._speaking = False
             # when VAD fires END_OF_SPEECH, it already waited for the silence_duration

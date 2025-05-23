@@ -35,6 +35,8 @@ class SpeechEventType(str, Enum):
     """usage event, emitted periodically to indicate usage metrics"""
     END_OF_SPEECH = "end_of_speech"
     """indicate the end of speech, emitted when the user stops speaking"""
+    STT_TURN_DETECTION = "stt_turn_detection"
+    """indicate that we want to use the STT turn detection, emitted on session begin"""
 
 
 @dataclass

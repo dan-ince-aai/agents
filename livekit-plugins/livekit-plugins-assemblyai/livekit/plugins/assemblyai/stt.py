@@ -44,10 +44,11 @@ from .log import logger
 
 ENGLISH = "en"
 DEFAULT_ENCODING = "pcm_s16le"
-DEFAULT_WORD_FINALIZATION_MAX_WAIT_TIME = 400
+DEFAULT_WORD_FINALIZATION_MAX_WAIT_TIME = 240
 DEFAULT_END_OF_TURN_CONFIDENCE_THRESHOLD = 0.5
-DEFAULT_MIN_END_OF_TURN_SILENCE_WHEN_CONFIDENT = 100
-DEFAULT_MAX_TURN_SILENCE = 700
+DEFAULT_MIN_END_OF_TURN_SILENCE_WHEN_CONFIDENT = 0
+DEFAULT_MAX_TURN_SILENCE = 400
+DEFAULT_TOKEN_MODE = False  # Added token_mode default
 
 
 # Define bytes per frame for different encoding types
@@ -66,6 +67,7 @@ class STTOptions:
     end_of_turn_confidence_threshold: NotGivenOr[float] = NOT_GIVEN
     min_end_of_turn_silence_when_confident: NotGivenOr[int] = NOT_GIVEN
     max_turn_silence: NotGivenOr[int] = NOT_GIVEN
+    token_mode: NotGivenOr[bool] = NOT_GIVEN  # Added token_mode
 
     def __post_init__(self):
         if self.encoding not in (NOT_GIVEN, "pcm_s16le", "pcm_mulaw"):
@@ -84,6 +86,7 @@ class STT(stt.STT):
         end_of_turn_confidence_threshold: NotGivenOr[float] = NOT_GIVEN,
         min_end_of_turn_silence_when_confident: NotGivenOr[int] = NOT_GIVEN,
         max_turn_silence: NotGivenOr[int] = NOT_GIVEN,
+        token_mode: NotGivenOr[bool] = NOT_GIVEN,  # Added token_mode
         http_session: aiohttp.ClientSession | None = None,
         buffer_size_seconds: float = 0.05,
     ):
@@ -103,13 +106,14 @@ class STT(stt.STT):
 
         self._opts = STTOptions(
             sample_rate=sample_rate,
+            buffer_size_seconds=buffer_size_seconds,
             word_boost=word_boost,
             encoding=encoding,
-            buffer_size_seconds=buffer_size_seconds,
             word_finalization_max_wait_time=word_finalization_max_wait_time,
             end_of_turn_confidence_threshold=end_of_turn_confidence_threshold,
             min_end_of_turn_silence_when_confident=min_end_of_turn_silence_when_confident,
             max_turn_silence=max_turn_silence,
+            token_mode=token_mode,  # Ensure token_mode is passed
         )
         self._session = http_session
         self._streams = weakref.WeakSet[SpeechStream]()
@@ -346,6 +350,7 @@ class SpeechStream(stt.SpeechStream):
             "max_turn_silence": self._opts.max_turn_silence
             if is_given(self._opts.max_turn_silence)
             else DEFAULT_MAX_TURN_SILENCE,
+            "token_mode": self._opts.token_mode if is_given(self._opts.token_mode) else DEFAULT_TOKEN_MODE,  # Added token_mode
         }
 
         headers = {
@@ -371,38 +376,98 @@ class SpeechStream(stt.SpeechStream):
 
         if message_type == "Begin":
             logger.debug("AssemblyAI session started: %s", str(data))
+            if self._opts.end_of_turn_confidence_threshold is not None and self._opts.end_of_turn_confidence_threshold > 0:
+                self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.STT_TURN_DETECTION))
 
         elif message_type == "Turn":
             logger.debug("AssemblyAI turn received: %s", str(data))
             alts = live_transcription_to_speech_data(ENGLISH, data)
 
-            #to do: fix to use confidence threshold instead of end_of_turn for now
-            end_of_turn = data.get("end_of_turn")
+            if self._opts.token_mode:
+                # Get all words from the message
+                all_words = data.get("words", [])
+
+                end_of_turn = data.get("end_of_turn")
             
-            if end_of_turn: 
-                final_event = stt.SpeechEvent(
+                if end_of_turn: 
+                    # first we want to send end of speech event to set speaking = False
+                    self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH)) 
+                
+                # Process each word to find token-level changes
+                for i, word in enumerate(all_words):
+                    word_id = f"{data.get('turn_order', 0)}_{i}"  # Create a unique ID for this word position
+                    word_text = word.get("text", "")
+                
+                # Check if this is a new or updated word
+                if word_id in self._last_seen_words:
+                    # This position has been seen before - check if the word has changed/expanded
+                    last_text = self._last_seen_words[word_id]
+                    
+                    if word_text != last_text and word_text.startswith(last_text):
+                        # The word has expanded (e.g., "medi" -> "medicine")
+                        # Emit just the new part as a final transcript
+                        new_part = word_text[len(last_text):]
+                        
+                        # Only emit if there's actually new content
+                        if new_part:
+                            delta_speech_data = stt.SpeechData(
+                                language="en-US",  # TODO: Revert to self._opts.language once STTOptions issue is resolved
+                                text=new_part,
+                                start_time=word.get("start", 0) / 1000.0,
+                                end_time=word.get("end", 0) / 1000.0,
+                                confidence=word.get("confidence", 0.0)
+                            )
+                            final_event = stt.SpeechEvent(
+                                type=stt.SpeechEventType.FINAL_TRANSCRIPT, 
+                                alternatives=[delta_speech_data]
+                            )
+                            self._event_ch.send_nowait(final_event)
+                            logger.debug(f"AssemblyAI: Emitted token update: '{new_part}' (from '{last_text}' to '{word_text}')")
+                    
+                    # Note: We don't handle complete word changes/corrections since AssemblyAI
+                    # only emits immutable transcripts where words only grow and don't get replaced
+                
+                else:
+                    # This is a completely new word - emit it as a final transcript
+                    delta_speech_data = stt.SpeechData(
+                        language="en-US",  # TODO: Revert to self._opts.language once STTOptions issue is resolved
+                        text=word_text,
+                        start_time=word.get("start", 0) / 1000.0,
+                        end_time=word.get("end", 0) / 1000.0,
+                        confidence=word.get("confidence", 0.0)
+                    )
+                    final_event = stt.SpeechEvent(
+                        type=stt.SpeechEventType.FINAL_TRANSCRIPT, 
+                        alternatives=[delta_speech_data]
+                    )
+                    self._event_ch.send_nowait(final_event)
+                    logger.debug(f"AssemblyAI: Emitted new word: '{word_text}'")
+                
+                # Update our tracking dictionary with this word's current text
+                self._last_seen_words[word_id] = word_text
+            else:
+                #to do: fix to use confidence threshold instead of end_of_turn for now
+                end_of_turn = data.get("end_of_turn")
+            
+                if end_of_turn: 
+                    # first we want to send end of speech event to set speaking = False
+                    self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH)) 
+                
+                    # then we send the final transcript event to end the turn
+                    final_event = stt.SpeechEvent(
                     type=stt.SpeechEventType.FINAL_TRANSCRIPT,
                     alternatives=alts,
                 )
                 self._final_events.append(final_event)
                 self._event_ch.send_nowait(final_event)
-                self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH))
 
-            else:
                 if data['turn_order'] not in self._utterance_mapping:
                     self._utterance_mapping[data['turn_order']] = {
                         "length_of_words": 0,
-                         "text": "",
+                        "text": "",
                     }
                     start_event = stt.SpeechEvent(type=stt.SpeechEventType.START_OF_SPEECH)
                     self._event_ch.send_nowait(start_event)
-                    
-                interim_event = stt.SpeechEvent(
-                    type=stt.SpeechEventType.INTERIM_TRANSCRIPT,
-                    request_id=str(data['turn_order']),
-                    alternatives=alts,
-                )
-                self._event_ch.send_nowait(interim_event)
                 
                 if self._speech_duration > 0:
                     usage_event = stt.SpeechEvent(
