@@ -207,6 +207,7 @@ class SpeechStream(stt.SpeechStream):
 
         # keep a list of final transcripts to combine them inside the END_OF_SPEECH event
         self._final_events: list[SpeechEvent] = []
+        self._last_seen_words: dict[str, str] = {}  # For token_mode
         self._reconnect_event = asyncio.Event()
 
     def update_options(
@@ -332,6 +333,7 @@ class SpeechStream(stt.SpeechStream):
                     await ws.close()
 
     async def _connect_ws(self) -> aiohttp.ClientWebSocketResponse:
+        self._last_seen_words.clear()  # Reset for new connection
         live_config = {
             "sample_rate": self._opts.sample_rate,
             "word_boost": json.dumps(self._opts.word_boost)
