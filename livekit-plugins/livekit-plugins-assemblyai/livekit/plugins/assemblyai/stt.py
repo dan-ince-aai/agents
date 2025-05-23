@@ -463,13 +463,26 @@ class SpeechStream(stt.SpeechStream):
                     self._final_events.append(final_event)
                     self._event_ch.send_nowait(final_event)
 
-                if data['turn_order'] not in self._utterance_mapping:
-                    self._utterance_mapping[data['turn_order']] = {
-                        "length_of_words": 0,
-                        "text": "",
-                    }
-                    start_event = stt.SpeechEvent(type=stt.SpeechEventType.START_OF_SPEECH)
-                    self._event_ch.send_nowait(start_event)
+                all_words = data.get("words", [])
+                for i, word in enumerate(all_words):
+                    word_id = f"{data.get('turn_order', 0)}_{i}"  # Create a unique ID for this word position
+                    word_text = word.get("text", "")
+                
+                # Check if this is a new or updated word
+                if word_id in self._last_seen_words:
+                    # This position has been seen before - check if the word has changed/expanded
+                    last_text = self._last_seen_words[word_id]
+                    
+                    if word_text != last_text and word_text.startswith(last_text):
+                        # The word has expanded (e.g., "medi" -> "medicine")
+                        # Emit just the new part as a start of speech
+                        new_part = word_text[len(last_text):]
+                        
+                        # Only emit if there's actually new content
+                        if new_part:
+                            start_event = stt.SpeechEvent(type=stt.SpeechEventType.START_OF_SPEECH)
+                            self._event_ch.send_nowait(start_event)
+
                 
                 if self._speech_duration > 0:
                     usage_event = stt.SpeechEvent(
