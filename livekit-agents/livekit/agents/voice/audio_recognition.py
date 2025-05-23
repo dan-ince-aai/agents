@@ -40,6 +40,8 @@ class RecognitionHooks(Protocol):
     def on_start_of_speech(self, ev: vad.VADEvent) -> None: ...
     def on_vad_inference_done(self, ev: vad.VADEvent) -> None: ...
     def on_end_of_speech(self, ev: vad.VADEvent) -> None: ...
+    def on_stt_start_of_speech(self, ev: stt.SpeechEvent) -> None: ...
+    def on_stt_end_of_speech(self, ev: stt.SpeechEvent) -> None: ...
     def on_interim_transcript(self, ev: stt.SpeechEvent) -> None: ...
     def on_final_transcript(self, ev: stt.SpeechEvent) -> None: ...
     def on_end_of_turn(self, info: _EndOfTurnInfo) -> bool: ...
@@ -266,12 +268,18 @@ class AudioRecognition:
             self._hooks.on_interim_transcript(ev)
             self._audio_interim_transcript = ev.alternatives[0].text
 
+        elif ev.type == stt.SpeechEventType.START_OF_SPEECH and not self._vad:
+            self.hooks.on_stt_start_of_speech(ev)
+            self._speaking = True
+
+            if self._end_of_turn_task is not None:
+                self._end_of_turn_task.cancel()
+
         elif ev.type == stt.SpeechEventType.END_OF_SPEECH and self._turn_detection_mode == "stt":
+            self._speaking = False
+            # if turn detection = "stt", we don't need to run EOU detection
+            # we'll just wait for the final transcript to be available 
             self._user_turn_committed = True
-            if not self._speaking:
-                # start response after vad fires END_OF_SPEECH to avoid vad interruption
-                chat_ctx = self._hooks.retrieve_chat_ctx().copy()
-                self._run_eou_detection(chat_ctx)
 
     async def _on_vad_event(self, ev: vad.VADEvent) -> None:
         if ev.type == vad.VADEventType.START_OF_SPEECH:
@@ -286,14 +294,17 @@ class AudioRecognition:
             self._hooks.on_vad_inference_done(ev)
 
         elif ev.type == vad.VADEventType.END_OF_SPEECH:
+            # Ignore VAD END_OF_SPEECH events when using STT turn detection
+            if self._turn_detection_mode == "stt":
+                self._last_speaking_time = time.time() - ev.silence_duration
+                return
+
             self._hooks.on_end_of_speech(ev)
             self._speaking = False
             # when VAD fires END_OF_SPEECH, it already waited for the silence_duration
             self._last_speaking_time = time.time() - ev.silence_duration
 
-            if self._vad_base_turn_detection or (
-                self._turn_detection_mode == "stt" and self._user_turn_committed
-            ):
+            if self._vad_base_turn_detection:
                 chat_ctx = self._hooks.retrieve_chat_ctx().copy()
                 self._run_eou_detection(chat_ctx)
 

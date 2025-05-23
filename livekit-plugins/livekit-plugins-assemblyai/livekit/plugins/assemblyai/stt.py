@@ -378,9 +378,6 @@ class SpeechStream(stt.SpeechStream):
 
         if message_type == "Begin":
             logger.debug("AssemblyAI session started: %s", str(data))
-            # Check if STT_TURN_DETECTION is available in the current version
-            if hasattr(stt.SpeechEventType, "STT_TURN_DETECTION") and self._opts.end_of_turn_confidence_threshold is not None and self._opts.end_of_turn_confidence_threshold > 0:
-                self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.STT_TURN_DETECTION))
 
         elif message_type == "Turn":
             logger.debug("AssemblyAI turn received: %s", str(data))
@@ -389,7 +386,6 @@ class SpeechStream(stt.SpeechStream):
             if self._opts.token_mode:
                 # Get all words from the message
                 all_words = data.get("words", [])
-
                 end_of_turn = data.get("end_of_turn")
             
                 if end_of_turn: 
@@ -448,6 +444,7 @@ class SpeechStream(stt.SpeechStream):
                 
                 # Update our tracking dictionary with this word's current text
                 self._last_seen_words[word_id] = word_text
+                
             else:
                 end_of_turn = data.get("end_of_turn")
             

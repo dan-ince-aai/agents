@@ -833,6 +833,15 @@ class AgentActivity(RecognitionHooks):
 
             self._current_speech.interrupt()
 
+    def on_stt_start_of_speech(self, ev: stt.SpeechEvent) -> None:
+        self._session._update_user_state("speaking")
+        if self.vad is None and not self._current_speech.interrupted and self._current_speech.allow_interruptions:
+            self._current_speech.interrupt()
+
+    def on_stt_end_of_speech(self, ev: stt.SpeechEvent) -> None:
+        self._session._update_user_state("listening")
+            
+
     def on_interim_transcript(self, ev: stt.SpeechEvent) -> None:
         if isinstance(self.llm, llm.RealtimeModel) and self.llm.capabilities.user_transcription:
             # skip stt transcription if user_transcription is enabled on the realtime model
