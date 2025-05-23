@@ -261,6 +261,10 @@ class AudioRecognition:
                     # but we'll live with it for now.
                     # the correct way is to ensure STT fires SpeechEventType.END_OF_SPEECH
                     # and using that timestamp for _last_speaking_time
+                    if self._stt_turn_detection:
+                        # if stt turn detection is enabled, we don't want to set last speaking time
+                        # as it will be set by the stt end of speech event
+                        return
                     self._last_speaking_time = time.time()
 
                 if not self._manual_turn_detection or self._user_turn_committed:
