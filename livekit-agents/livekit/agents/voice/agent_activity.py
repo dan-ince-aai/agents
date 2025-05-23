@@ -384,7 +384,7 @@ class AgentActivity(RecognitionHooks):
                 ),
                 min_endpointing_delay=self._session.options.min_endpointing_delay,
                 max_endpointing_delay=self._session.options.max_endpointing_delay,
-                manual_turn_detection=self._turn_detection_mode == "manual",
+                turn_detection_mode=self._turn_detection_mode,
             )
             self._audio_recognition.start()
             self._started = True
@@ -794,8 +794,8 @@ class AgentActivity(RecognitionHooks):
         self._session._update_user_state("listening")
 
     def on_vad_inference_done(self, ev: vad.VADEvent) -> None:
-        if self._turn_detection_mode not in ("vad", None):
-            # ignore vad inference done event if turn_detection is not set to vad or default
+        if self._turn_detection_mode in ("manual", "realtime_llm"):
+            # ignore vad inference done event if turn_detection is manual or realtime_llm
             return
 
         if isinstance(self.llm, llm.RealtimeModel) and self.llm.capabilities.turn_detection:
@@ -813,7 +813,10 @@ class AgentActivity(RecognitionHooks):
             text = self._audio_recognition.current_transcript
 
             # TODO(long): better word splitting for multi-language
-            if len(split_words(text)) < self._session.options.min_interruption_words:
+            if (
+                len(split_words(text, split_character=True))
+                < self._session.options.min_interruption_words
+            ):
                 return
 
         if (
@@ -829,29 +832,6 @@ class AgentActivity(RecognitionHooks):
                 self._rt_session.interrupt()
 
             self._current_speech.interrupt()
-
-    def on_stt_start_of_speech(self, ev: stt.SpeechEvent) -> None:
-        self._session._update_user_state("speaking")
-
-        # If VAD is disabled, STT start of speech should interrupt the agent
-        if self.vad is None:
-            log_event(
-                "speech interrupted by stt_start_of_speech (VAD disabled)",
-                speech_id=self._current_speech.id,
-            )
-            if self._rt_session is not None:
-                self._rt_session.interrupt()
-            if self._current_speech is not None:
-                self._current_speech.interrupt()
-
-    def on_stt_end_of_speech(self, ev: stt.SpeechEvent) -> None:
-        self._session._update_user_state("listening")
-        
-    def on_stt_turn_detection(self, ev: stt.SpeechEvent) -> None:
-        # This method is called when the STT engine signals it supports turn detection
-        # We don't need to do anything special here, as AudioRecognition will
-        # set its internal _stt_turn_detection flag
-        pass
 
     def on_interim_transcript(self, ev: stt.SpeechEvent) -> None:
         if isinstance(self.llm, llm.RealtimeModel) and self.llm.capabilities.user_transcription:
@@ -896,7 +876,8 @@ class AgentActivity(RecognitionHooks):
             and self._current_speech.allow_interruptions
             and not self._current_speech.interrupted
             and self._session.options.min_interruption_words > 0
-            and len(split_words(info.new_transcript)) < self._session.options.min_interruption_words
+            and len(split_words(info.new_transcript, split_character=True))
+            < self._session.options.min_interruption_words
         ):
             # avoid interruption if the new_transcript is too short
             return False
@@ -1137,8 +1118,8 @@ class AgentActivity(RecognitionHooks):
         tool_ctx = llm.ToolContext(tools)
 
         if new_message is not None:
-            chat_ctx.insert_item(new_message)
-            self._agent._chat_ctx.insert_item(new_message)
+            chat_ctx.insert(new_message)
+            self._agent._chat_ctx.insert(new_message)
             self._session._conversation_item_added(new_message)
 
         if instructions is not None:
@@ -1227,7 +1208,7 @@ class AgentActivity(RecognitionHooks):
             for msg in _tools_messages:
                 # reset the created_at to the reply start time
                 msg.created_at = reply_started_at
-            self._agent._chat_ctx.insert_item(_tools_messages)
+            self._agent._chat_ctx.insert(_tools_messages)
 
         if speech_handle.interrupted:
             await utils.aio.cancel_and_wait(*tasks)
@@ -1257,7 +1238,7 @@ class AgentActivity(RecognitionHooks):
                 interrupted=True,
                 created_at=reply_started_at,
             )
-            self._agent._chat_ctx.insert_item(msg)
+            self._agent._chat_ctx.insert(msg)
             self._session._update_agent_state("listening")
             self._session._conversation_item_added(msg)
             speech_handle._set_chat_message(msg)
@@ -1273,7 +1254,7 @@ class AgentActivity(RecognitionHooks):
                 interrupted=False,
                 created_at=reply_started_at,
             )
-            self._agent._chat_ctx.insert_item(msg)
+            self._agent._chat_ctx.insert(msg)
             self._session._conversation_item_added(msg)
             speech_handle._set_chat_message(msg)
 
@@ -1377,7 +1358,7 @@ class AgentActivity(RecognitionHooks):
                 # add the tool calls and outputs to the chat context even no reply is generated
                 for msg in tool_messages:
                     msg.created_at = reply_started_at
-                self._agent._chat_ctx.insert_item(tool_messages)
+                self._agent._chat_ctx.insert(tool_messages)
 
     @utils.log_exceptions(logger=logger)
     async def _realtime_reply_task(
