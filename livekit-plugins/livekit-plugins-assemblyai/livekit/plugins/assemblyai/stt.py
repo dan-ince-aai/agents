@@ -457,11 +457,11 @@ class SpeechStream(stt.SpeechStream):
                 
                     # then we send the final transcript event to end the turn
                     final_event = stt.SpeechEvent(
-                    type=stt.SpeechEventType.FINAL_TRANSCRIPT,
-                    alternatives=alts,
-                )
-                self._final_events.append(final_event)
-                self._event_ch.send_nowait(final_event)
+                        type=stt.SpeechEventType.FINAL_TRANSCRIPT,
+                        alternatives=alts,
+                    )
+                    self._final_events.append(final_event)
+                    self._event_ch.send_nowait(final_event)
 
                 if data['turn_order'] not in self._utterance_mapping:
                     self._utterance_mapping[data['turn_order']] = {
