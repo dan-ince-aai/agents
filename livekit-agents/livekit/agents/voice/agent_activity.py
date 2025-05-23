@@ -835,18 +835,13 @@ class AgentActivity(RecognitionHooks):
 
         # If VAD is disabled, STT start of speech should interrupt the agent
         if self.vad is None:
-            if (
-                self._current_speech is not None
-                and not self._current_speech.interrupted
-                and self._current_speech.allow_interruptions
-            ):
-                log_event(
-                    "speech interrupted by stt_start_of_speech (VAD disabled)",
-                    speech_id=self._current_speech.id,
-                )
-                if self._rt_session is not None:
-                    self._rt_session.interrupt()
-
+            log_event(
+                "speech interrupted by stt_start_of_speech (VAD disabled)",
+                speech_id=self._current_speech.id,
+            )
+            if self._rt_session is not None:
+                self._rt_session.interrupt()
+            if self._current_speech is not None:
                 self._current_speech.interrupt()
 
     def on_stt_end_of_speech(self, ev: stt.SpeechEvent) -> None:
