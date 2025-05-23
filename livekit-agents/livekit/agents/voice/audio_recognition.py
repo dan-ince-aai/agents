@@ -278,14 +278,14 @@ class AudioRecognition:
             if not self._stt_turn_detection:
                 # ignore STT END_OF_SPEECH if STT turn detection is disabled
                 return
-            self._hooks.on_stt_end_of_speech(ev)
             if self._speaking:
+                self._hooks.on_stt_end_of_speech(ev)
                 self._speaking = False
                 self._last_speaking_time = time.time()
         
         elif ev.type == stt.SpeechEventType.START_OF_SPEECH:
-            self._hooks.on_stt_start_of_speech(ev)
             if not self._speaking:
+                self._hooks.on_stt_start_of_speech(ev)
                 self._speaking = True
             
             if self._end_of_turn_task is not None:

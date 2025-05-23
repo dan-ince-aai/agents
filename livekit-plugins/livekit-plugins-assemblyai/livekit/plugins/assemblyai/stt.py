@@ -392,6 +392,7 @@ class SpeechStream(stt.SpeechStream):
                 end_of_turn = data.get("end_of_turn")
             
                 if end_of_turn: 
+                    # todo: fix to use confidence threshold instead of end_of_turn for now
                     # first we want to send end of speech event to set speaking = False
                     self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH)) 
                 
@@ -448,7 +449,6 @@ class SpeechStream(stt.SpeechStream):
                 # Update our tracking dictionary with this word's current text
                 self._last_seen_words[word_id] = word_text
             else:
-                #to do: fix to use confidence threshold instead of end_of_turn for now
                 end_of_turn = data.get("end_of_turn")
             
                 if end_of_turn: 
